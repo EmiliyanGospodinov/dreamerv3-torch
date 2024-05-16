@@ -3,8 +3,9 @@ import functools
 import os
 import pathlib
 import sys
+import wandb
 
-os.environ["MUJOCO_GL"] = "osmesa"
+os.environ["MUJOCO_GL"] = "egl"
 
 import numpy as np
 import ruamel.yaml as yaml
@@ -70,6 +71,7 @@ class Dreamer(nn.Module):
             if self._should_log(step):
                 for name, values in self._metrics.items():
                     self._logger.scalar(name, float(np.mean(values)))
+                    wandb.log({name: float(np.mean(values))}, step=step)
                     self._metrics[name] = []
                 if self._config.video_pred_log:
                     openl = self._wm.video_pred(next(self._dataset))
@@ -89,6 +91,7 @@ class Dreamer(nn.Module):
         else:
             latent, action = state
         obs = self._wm.preprocess(obs)
+
         embed = self._wm.encoder(obs)
         latent, _ = self._wm.dynamics.obs_step(latent, action, embed, obs["is_first"])
         if self._config.eval_state_mean:
@@ -193,6 +196,13 @@ def make_env(config, mode, id):
 
         env = minecraft.make_env(task, size=config.size, break_speed=config.break_speed)
         env = wrappers.OneHotAction(env)
+    elif suite == "gym":
+        from envs.gymnasium import GymEnvFactory, GymConfigs, GymNonStationaryInter
+        env_config = GymConfigs if config.env_type == "gym_stationary" else GymNonStationaryInter
+        env_config.env_type = config.env_type
+        env_config.env = config.env
+        env_config.obs_type = config.obs_type
+        env = GymEnvFactory.build(seed=config.seed + id, config=env_config)
     else:
         raise NotImplementedError(suite)
     env = wrappers.TimeLimit(env, config.time_limit)
@@ -221,7 +231,18 @@ def main(config):
     config.evaldir.mkdir(parents=True, exist_ok=True)
     step = count_steps(config.traindir)
     # step in logger is environmental step
-    logger = tools.Logger(logdir, config.action_repeat * step)
+    logger = tools.Logger(logdir, config.action_repeat * step, config.obs_type)
+
+    #initialize wandb
+    # WANDB Settings
+    settings = wandb.Settings(init_timeout=600)
+    wandb_project = config.wandb_project_name
+    wandb_group = config.task
+    entity = ""
+    if entity == "":
+        wandb.init(project=wandb_project, group=wandb_group, config=config, settings=settings)
+    else:
+        wandb.init(project=wandb_project, group=wandb_group, entity=entity, config=config, settings=settings)
 
     print("Create envs.")
     if config.offline_traindir:
@@ -277,6 +298,7 @@ def main(config):
             logger,
             limit=config.dataset_size,
             steps=prefill,
+            obs_type=config.obs_type,
         )
         logger.step += prefill * config.action_repeat
         print(f"Logger: ({logger.step} steps).")
@@ -292,11 +314,11 @@ def main(config):
         train_dataset,
     ).to(config.device)
     agent.requires_grad_(requires_grad=False)
-    if (logdir / "latest.pt").exists():
-        checkpoint = torch.load(logdir / "latest.pt")
-        agent.load_state_dict(checkpoint["agent_state_dict"])
-        tools.recursively_load_optim_state_dict(agent, checkpoint["optims_state_dict"])
-        agent._should_pretrain._once = False
+    # if (logdir / "latest.pt").exists():
+    #     checkpoint = torch.load(logdir / "latest.pt")
+    #     agent.load_state_dict(checkpoint["agent_state_dict"])
+    #     tools.recursively_load_optim_state_dict(agent, checkpoint["optims_state_dict"])
+    #     agent._should_pretrain._once = False
 
     # make sure eval will be executed once after config.steps
     while agent._step < config.steps + config.eval_every:
@@ -312,6 +334,7 @@ def main(config):
                 logger,
                 is_eval=True,
                 episodes=config.eval_episode_num,
+                obs_type=config.obs_type,
             )
             if config.video_pred_log:
                 video_pred = agent._wm.video_pred(next(eval_dataset))
@@ -326,6 +349,7 @@ def main(config):
             limit=config.dataset_size,
             steps=config.eval_every,
             state=state,
+            obs_type=config.obs_type,
         )
         items_to_save = {
             "agent_state_dict": agent.state_dict(),
