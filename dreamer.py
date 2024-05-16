@@ -8,6 +8,7 @@ import wandb
 os.environ["MUJOCO_GL"] = "egl"
 
 import numpy as np
+import random
 import ruamel.yaml as yaml
 
 sys.path.append(str(pathlib.Path(__file__).parent))
@@ -214,10 +215,11 @@ def make_env(config, mode, id):
 
 
 def main(config):
+    config.seed = random.randint(0, 2 ** 32 - 1)
     tools.set_seed_everywhere(config.seed)
     if config.deterministic_run:
         tools.enable_deterministic_run()
-    logdir = pathlib.Path(config.logdir).expanduser()
+    logdir = pathlib.Path(config.logdir + str(config.seed)).expanduser()
     config.traindir = config.traindir or logdir / "train_eps"
     config.evaldir = config.evaldir or logdir / "eval_eps"
     config.steps //= config.action_repeat
