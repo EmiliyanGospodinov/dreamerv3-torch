@@ -7,6 +7,7 @@ import pathlib
 import re
 import time
 import random
+import wandb
 
 import numpy as np
 
@@ -55,7 +56,7 @@ class TimeRecording:
 
 
 class Logger:
-    def __init__(self, logdir, step):
+    def __init__(self, logdir, step, obs_type):
         self._logdir = logdir
         self._writer = SummaryWriter(log_dir=str(logdir), max_queue=1000)
         self._last_step = None
@@ -64,6 +65,7 @@ class Logger:
         self._images = {}
         self._videos = {}
         self.step = step
+        self.obs_type = obs_type
 
     def scalar(self, name, value):
         self._scalars[name] = float(value)
@@ -92,11 +94,12 @@ class Logger:
             self._writer.add_image(name, value, step)
         for name, value in self._videos.items():
             name = name if isinstance(name, str) else name.decode("utf-8")
-            if np.issubdtype(value.dtype, np.floating):
+            if np.issubdtype(value.dtype, np.floating) and self.obs_type == "image":
                 value = np.clip(255 * value, 0, 255).astype(np.uint8)
-            B, T, H, W, C = value.shape
-            value = value.transpose(1, 4, 2, 0, 3).reshape((1, T, C, H, B * W))
-            self._writer.add_video(name, value, step, 16)
+
+                B, T, H, W, C = value.shape
+                value = value.transpose(1, 4, 2, 0, 3).reshape((1, T, C, H, B * W))
+                self._writer.add_video(name, value, step, 16)
 
         self._writer.flush()
         self._scalars = {}
@@ -136,6 +139,7 @@ def simulate(
     steps=0,
     episodes=0,
     state=None,
+    obs_type="image",
 ):
     # initialize or unpack simulation state
     if state is None:
@@ -205,7 +209,7 @@ def simulate(
                 save_episodes(directory, {envs[i].id: cache[envs[i].id]})
                 length = len(cache[envs[i].id]["reward"]) - 1
                 score = float(np.array(cache[envs[i].id]["reward"]).sum())
-                video = cache[envs[i].id]["image"]
+                video = cache[envs[i].id][obs_type]
                 # record logs given from environments
                 for key in list(cache[envs[i].id].keys()):
                     if "log_" in key:
@@ -222,6 +226,10 @@ def simulate(
                     logger.scalar(f"train_length", length)
                     logger.scalar(f"train_episodes", len(cache))
                     logger.write(step=logger.step)
+                    wandb.log({"train_return": score,
+                                "train_length": length,
+                                "train_episodes": len(cache)})
+
                 else:
                     if not "eval_lengths" in locals():
                         eval_lengths = []
@@ -241,6 +249,10 @@ def simulate(
                         logger.scalar(f"eval_episodes", len(eval_scores))
                         logger.write(step=logger.step)
                         eval_done = True
+
+                        wandb.log({"eval_return": score,
+                                    "eval_length": length,
+                                    "eval_episodes": len(eval_scores)})
     if is_eval:
         # keep only last item for saving memory. this cache is used for video_pred later
         while len(cache) > 1:
