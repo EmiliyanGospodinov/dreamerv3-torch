@@ -32,7 +32,13 @@ class WorldModel(nn.Module):
         self._step = step
         self._use_amp = True if config.precision == 16 else False
         self._config = config
-        shapes = {k: tuple(v.shape) for k, v in obs_space.spaces.items()}
+        self._obs_type = config.obs_type
+        print(f"OBSERVATION TYPE: {self._obs_type}")
+        print(f"OBS_SPACES: {obs_space}")
+        if hasattr(config, "gym"):
+            shapes = {config.obs_type: obs_space.shape}
+        else:
+            shapes = {k: tuple(v.shape) for k, v in obs_space.spaces.items()}
         self.encoder = networks.MultiEncoder(shapes, **config.encoder)
         self.embed_size = self.encoder.outdim
         self.dynamics = networks.RSSM(
@@ -173,7 +179,8 @@ class WorldModel(nn.Module):
     # this function is called during both rollout and training
     def preprocess(self, obs):
         obs = obs.copy()
-        obs["image"] = torch.Tensor(obs["image"]) / 255.0
+        if self._obs_type == "image":
+            obs["image"] = torch.Tensor(obs["image"]) / 255.0
         if "discount" in obs:
             obs["discount"] *= self._config.discount
             # (batch_size, batch_length) -> (batch_size, batch_length, 1)
